@@ -1,0 +1,5 @@
+{
+  "name": "Gradient Wave Generator",
+  "description": "A high-performance generator for looping, gradient wave backgrounds. Supports Full HD 60FPS export, customizable colors, speed, blend modes, and blur intensity.",
+  "requestFramePermissions": []
+}
