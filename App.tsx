@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Play, Pause, RefreshCw, Plus, X, Video, Image as ImageIcon, Layout, Monitor, Smartphone, Square, Type, CloudRain, Sparkles, Palette, Wand2, Undo, Redo, Layers, Trash2, Move, ImagePlus, Eye, Bold, Italic, Upload, Music, Scissors } from 'lucide-react';
+import { Play, Pause, RefreshCw, Plus, X, Video, Image as ImageIcon, Layout, Monitor, Smartphone, Square, Type, CloudRain, Sparkles, Palette, Wand2, Undo, Redo, Layers, Trash2, Move, ImagePlus, Eye, Bold, Italic, Upload, Music, Scissors, FileText, ArrowRight, Square as StopSquare, Wind, Maximize, Activity, Gauge, Droplets, Bell } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
 // --- Types ---
@@ -71,8 +71,14 @@ interface DesignState {
     bgType: 'color' | 'image';
     bgColor: string;
     bgImage: HTMLImageElement | null;
+    bgOpacity: number; // New: Background Opacity
     weatherType: WeatherType;
-    weatherIntensity: number;
+    weatherDensity: number; // Renamed from intensity
+    weatherScale: number; // New
+    weatherAngle: number; // New: -45 to 45 degrees
+    weatherWobble: number; // New: 0 to 2 multiplier
+    weatherSpeed: number; // New: Speed multiplier
+    weatherOpacity: number; // New: Opacity multiplier
     textLayers: TextLayer[];
     logo: LogoLayer | null;
     customFonts: CustomFont[];
@@ -104,7 +110,7 @@ const DEFAULT_COLORS = [
 
 const INITIAL_TEXT_LAYER: TextLayer = {
     id: '1',
-    text: 'Wave Gen',
+    text: 'Vid Quotes',
     fontFamily: 'Poppins',
     fontWeight: '800',
     fontStyle: 'normal',
@@ -128,8 +134,14 @@ const INITIAL_DESIGN: DesignState = {
     bgType: 'color',
     bgColor: '#000000',
     bgImage: null,
+    bgOpacity: 1.0,
     weatherType: 'none',
-    weatherIntensity: 50,
+    weatherDensity: 50,
+    weatherScale: 1.0,
+    weatherAngle: 0,
+    weatherWobble: 1.0,
+    weatherSpeed: 1.0,
+    weatherOpacity: 1.0,
     textLayers: [INITIAL_TEXT_LAYER],
     logo: null,
     customFonts: [],
@@ -171,6 +183,49 @@ const formatTime = (seconds: number) => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+const playNotificationSound = () => {
+    try {
+        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioContext) return;
+        
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        // Bell/Chime sound
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime); // A5
+        osc.frequency.exponentialRampToValueAtTime(1100, ctx.currentTime + 0.1); 
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 1.5);
+
+        gain.gain.setValueAtTime(0, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
+
+        osc.start();
+        osc.stop(ctx.currentTime + 1.5);
+        
+        // Add a secondary harmonic for richness
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.type = 'triangle';
+        osc2.frequency.setValueAtTime(1760, ctx.currentTime); // A6
+        gain2.gain.setValueAtTime(0, ctx.currentTime);
+        gain2.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.05);
+        gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.0);
+        osc2.start();
+        osc2.stop(ctx.currentTime + 1.0);
+
+    } catch (e) {
+        console.error("Audio notification failed", e);
+    }
+};
+
 // --- Main Component ---
 
 const App: React.FC = () => {
@@ -183,8 +238,11 @@ const App: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingProgress, setRecordingProgress] = useState(0);
-  const [activeTab, setActiveTab] = useState<'visuals' | 'typography' | 'logo' | 'music' | 'weather' | 'ai'>('visuals');
+  const [activeTab, setActiveTab] = useState<'visuals' | 'typography' | 'logo' | 'music' | 'weather' | 'ai' | 'quotes'>('visuals');
   
+  // Quotes State
+  const [quotes, setQuotes] = useState<string[]>([]);
+
   // Design State & History
   const [design, setDesign] = useState<DesignState>(INITIAL_DESIGN);
   const [history, setHistory] = useState<DesignState[]>([INITIAL_DESIGN]);
@@ -288,24 +346,35 @@ const App: React.FC = () => {
       }
   };
 
+  const handleStop = () => {
+      setIsPlaying(false);
+      if (audioPreviewRef.current) {
+          audioPreviewRef.current.currentTime = design.audioStart;
+      }
+  };
+
 
   // --- Logic for Weather ---
 
   const initWeather = useCallback(() => {
-    const count = design.weatherType === 'none' ? 0 : Math.floor(design.weatherIntensity * (design.weatherType === 'rain' ? 5 : 2));
+    // Determine count based on Density
+    const count = design.weatherType === 'none' ? 0 : Math.floor(design.weatherDensity * (design.weatherType === 'rain' ? 5 : 2));
+    
     const newParticles: WeatherParticle[] = [];
     for (let i = 0; i < count; i++) {
         newParticles.push({
             x: Math.random() * currentDims.w,
             y: Math.random() * currentDims.h,
+            // Base speed randomized
             speed: Math.random() * (design.weatherType === 'rain' ? 20 : 2) + (design.weatherType === 'rain' ? 10 : 0.5),
+            // Base size randomized
             size: Math.random() * (design.weatherType === 'rain' ? 3 : 5) + 1,
             opacity: Math.random() * 0.5 + 0.3,
             wobble: Math.random() * Math.PI * 2
         });
     }
     particlesRef.current = newParticles;
-  }, [design.weatherType, design.weatherIntensity, currentDims]);
+  }, [design.weatherType, design.weatherDensity, currentDims]);
 
   useEffect(() => {
     initWeather();
@@ -379,7 +448,28 @@ const App: React.FC = () => {
             ctx.shadowOffsetY = 4 * scaleFactor;
         }
 
-        const lines = layer.text.split('\n');
+        // TEXT WRAPPING LOGIC
+        const maxWidth = w * 0.9; // 90% of canvas width to stay inside
+        const paragraphs = layer.text.split('\n');
+        let lines: string[] = [];
+
+        paragraphs.forEach(paragraph => {
+            const words = paragraph.split(' ');
+            let currentLine = words[0];
+
+            for (let i = 1; i < words.length; i++) {
+                const word = words[i];
+                const width = ctx.measureText(currentLine + " " + word).width;
+                if (width < maxWidth) {
+                    currentLine += " " + word;
+                } else {
+                    lines.push(currentLine);
+                    currentLine = word;
+                }
+            }
+            lines.push(currentLine);
+        });
+
         const lineHeight = finalFontSize * 1.2;
         const totalHeight = lines.length * lineHeight;
         
@@ -427,28 +517,67 @@ const App: React.FC = () => {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     
+    // Angle in radians
+    const angleRad = (design.weatherAngle * Math.PI) / 180;
+    const cosA = Math.cos(angleRad);
+    const sinA = Math.sin(angleRad);
+
     particlesRef.current.forEach(p => {
-        p.y += p.speed;
+        // Base movement down vector
+        // Modified by angle AND global speed
+        const currentSpeed = p.speed * design.weatherSpeed;
+
+        p.y += currentSpeed * cosA; 
+        p.x += currentSpeed * sinA;
+
         if (design.weatherType === 'snow') {
-            p.x += Math.sin(p.wobble) * 0.5;
+            // Apply wobble (perpendicular to movement or just x-axis based)
+            // For simplicity, wobble affects X relative to the screen, modified by amplitude
+            p.x += Math.sin(p.wobble) * 0.5 * design.weatherWobble;
             p.wobble += 0.05;
+        } else if (design.weatherType === 'rain') {
+            // Slight jitter for rain if wobble > 0
+             p.x += (Math.random() - 0.5) * 0.5 * design.weatherWobble;
         }
 
-        // Reset if out of bounds
-        if (p.y > h) {
-            p.y = -10;
+        // Wrap around logic with margin for angle
+        if (p.y > h + 50) {
+            p.y = -50;
             p.x = Math.random() * w;
+        } else if (p.y < -50) {
+             p.y = h + 50;
+             p.x = Math.random() * w;
+        }
+        
+        if (p.x > w + 50) {
+            p.x = -50;
+            p.y = Math.random() * h;
+        } else if (p.x < -50) {
+            p.x = w + 50;
+            p.y = Math.random() * h;
         }
 
-        ctx.fillStyle = `rgba(255, 255, 255, ${p.opacity})`;
+        // Apply Global Opacity
+        const finalOpacity = Math.max(0, Math.min(1, p.opacity * design.weatherOpacity));
+        ctx.fillStyle = `rgba(255, 255, 255, ${finalOpacity})`;
+        
         ctx.beginPath();
         
+        // Apply Scale
+        const finalSize = p.size * design.weatherScale;
+
         if (design.weatherType === 'rain') {
-            ctx.rect(p.x, p.y, 1, p.size * 5);
+            // Rotate the rain drop
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(-angleRad); // Rotate to match fall angle
+            ctx.rect(0, 0, 1 * Math.max(0.5, design.weatherScale * 0.5), finalSize * 5);
+            ctx.fill();
+            ctx.restore();
         } else {
-            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.arc(p.x, p.y, finalSize, 0, Math.PI * 2);
+            ctx.fill();
         }
-        ctx.fill();
     });
     ctx.restore();
   };
@@ -460,17 +589,23 @@ const App: React.FC = () => {
     ctx.clearRect(0, 0, w, h);
     
     // 1. Draw Background
+    // Base solid black to ensure opacity changes fade to black
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, w, h);
+
+    // Draw active background with opacity
+    ctx.save();
+    ctx.globalAlpha = design.bgOpacity; // Apply background opacity
+
     if (design.bgType === 'color') {
         ctx.fillStyle = design.bgColor;
         ctx.fillRect(0, 0, w, h);
     } else if (design.bgType === 'image' && design.bgImage) {
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, w, h);
         drawImageCover(ctx, design.bgImage, 0, 0, w, h);
-    } else {
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, w, h);
-    }
+    } 
+    // If neither, the base black remains
+
+    ctx.restore();
 
     // 2. Apply Wave/Blobs
     ctx.save(); // Save before blur/blend
@@ -639,6 +774,33 @@ const App: React.FC = () => {
       reader.readAsArrayBuffer(file);
   };
 
+  const handleQuoteUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+          if (event.target?.result) {
+              const text = event.target.result as string;
+              // Split by new line, filter out empty lines
+              const newQuotes = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+              setQuotes(prev => [...prev, ...newQuotes]);
+              // Reset file input
+              e.target.value = '';
+          }
+      };
+      reader.readAsText(file);
+  };
+
+  const loadNextQuote = () => {
+      if (quotes.length > 0) {
+          const nextQuote = quotes[0];
+          updateActiveLayer({ text: nextQuote });
+          handleCommit();
+          // We don't remove it here yet, we remove it on Export success
+      }
+  };
+
   const handleColorChange = (index: number, newColor: string) => {
     const newColors = [...design.colors];
     newColors[index] = newColor;
@@ -783,6 +945,22 @@ const App: React.FC = () => {
         setIsRecording(false);
         setIsPlaying(true);
         setRecordingProgress(0);
+
+        // Play Notification Sound
+        playNotificationSound();
+
+        // --- Remove rendered text from Quotes list ---
+        const renderedText = getActiveLayer().text.trim();
+        setQuotes(prevQuotes => {
+            // Find index of the text that was just rendered
+            const index = prevQuotes.findIndex(q => q.trim() === renderedText);
+            if (index !== -1) {
+                const newQuotes = [...prevQuotes];
+                newQuotes.splice(index, 1);
+                return newQuotes;
+            }
+            return prevQuotes;
+        });
     };
 
     // -- Real-Time Recording Loop --
@@ -827,7 +1005,7 @@ const App: React.FC = () => {
           {/* Left: Logo & Undo/Redo */}
           <div className="flex items-center gap-6">
             <div className="font-bold text-xl tracking-tight bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent min-w-[100px]">
-                Wave Gen
+                Vid Quotes Maker
             </div>
             <div className="flex items-center gap-2 border-l border-gray-700 pl-6">
                 <button onClick={undo} disabled={historyIndex === 0} className="p-2 rounded hover:bg-gray-700 text-gray-400 disabled:opacity-30">
@@ -893,7 +1071,7 @@ const App: React.FC = () => {
       <div className="flex-1 relative flex items-center justify-center bg-[#0d1117] p-4 lg:p-8 overflow-hidden">
         {/* Aspect Ratio Container */}
         <div 
-            className="relative shadow-2xl rounded-lg overflow-hidden border border-gray-800 transition-all duration-300 ease-in-out bg-black"
+            className="relative shadow-2xl rounded-lg overflow-hidden border border-gray-800 transition-all duration-300 ease-in-out bg-black group"
             style={{ 
                 aspectRatio: `${currentDims.w}/${currentDims.h}`,
                 height: currentDims.h > currentDims.w ? '90%' : 'auto',
@@ -909,6 +1087,29 @@ const App: React.FC = () => {
                 className="w-full h-full object-contain"
             />
             
+            {/* Play/Stop Overlay */}
+            {!isRecording && (
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 z-30 opacity-0 group-hover:opacity-100 transition-all duration-300 translate-y-2 group-hover:translate-y-0">
+                    <div className="bg-black/60 backdrop-blur-md rounded-full p-2 border border-white/10 shadow-2xl flex items-center gap-1">
+                        <button 
+                            onClick={() => setIsPlaying(!isPlaying)}
+                            className="p-3 rounded-full hover:bg-white/20 text-white transition-all hover:scale-110 active:scale-95"
+                            title={isPlaying ? "Pause" : "Play"}
+                        >
+                            {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-0.5" />}
+                        </button>
+                        <div className="w-px h-6 bg-white/20 mx-1"></div>
+                        <button 
+                            onClick={handleStop}
+                            className="p-3 rounded-full hover:bg-white/20 text-red-400 hover:text-red-300 transition-all hover:scale-110 active:scale-95"
+                            title="Stop & Reset"
+                        >
+                            <StopSquare size={24} fill="currentColor" />
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Recording Overlay */}
             {isRecording && (
                 <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-50">
@@ -951,6 +1152,9 @@ const App: React.FC = () => {
             <button onClick={() => setActiveTab('ai')} className={`flex items-center gap-2 px-4 py-3 text-xs font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'ai' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
                 <Wand2 size={14} /> AI Gen
             </button>
+            <button onClick={() => setActiveTab('quotes')} className={`flex items-center gap-2 px-4 py-3 text-xs font-bold uppercase tracking-wider border-b-2 transition-colors ${activeTab === 'quotes' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+                <FileText size={14} /> Quotes
+            </button>
         </div>
 
         <div className="p-6 max-w-7xl mx-auto min-h-[220px]">
@@ -974,7 +1178,7 @@ const App: React.FC = () => {
                                 <input type="range" min="0" max="300" step="10" value={design.blurLevel} onChange={(e) => updateDesign({ blurLevel: parseInt(e.target.value) })} onMouseUp={handleCommit} disabled={isRecording} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500" />
                              </div>
                              <div>
-                                <div className="flex justify-between mb-2"><label className="text-xs text-gray-400 font-bold uppercase">Opacity</label><span className="text-xs text-gray-500">{(design.blobOpacity * 100).toFixed(0)}%</span></div>
+                                <div className="flex justify-between mb-2"><label className="text-xs text-gray-400 font-bold uppercase">Blob Opacity</label><span className="text-xs text-gray-500">{(design.blobOpacity * 100).toFixed(0)}%</span></div>
                                 <input type="range" min="0" max="1" step="0.05" value={design.blobOpacity} onChange={(e) => updateDesign({ blobOpacity: parseFloat(e.target.value) })} onMouseUp={handleCommit} disabled={isRecording} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500" />
                              </div>
                         </div>
@@ -985,7 +1189,7 @@ const App: React.FC = () => {
                                 <select value={design.blendMode} onChange={(e) => updateDesign({ blendMode: e.target.value as BlendMode }, true)} disabled={isRecording} className="w-full bg-gray-800 text-xs border border-gray-700 rounded px-2 py-1.5 text-gray-300"><option value="source-over">Normal</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft</option><option value="multiply">Multiply</option></select>
                             </div>
                             <div className="flex-1">
-                                <label className="block text-xs text-gray-400 font-bold uppercase mb-2">Bg</label>
+                                <label className="block text-xs text-gray-400 font-bold uppercase mb-2">Bg Type</label>
                                 <div className="flex gap-2">
                                     {design.bgType === 'color' ? (
                                         <div className="flex-1 flex items-center gap-2 bg-gray-800 rounded px-2 py-1 border border-gray-700">
@@ -1004,6 +1208,11 @@ const App: React.FC = () => {
                                     )}
                                 </div>
                             </div>
+                        </div>
+                        
+                        <div>
+                             <div className="flex justify-between mb-2"><label className="text-xs text-gray-400 font-bold uppercase">Background Opacity</label><span className="text-xs text-gray-500">{(design.bgOpacity * 100).toFixed(0)}%</span></div>
+                             <input type="range" min="0" max="1" step="0.05" value={design.bgOpacity} onChange={(e) => updateDesign({ bgOpacity: parseFloat(e.target.value) })} onMouseUp={handleCommit} disabled={isRecording} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500" />
                         </div>
                     </div>
 
@@ -1051,6 +1260,17 @@ const App: React.FC = () => {
                     {/* Layer Editor */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <div className="space-y-4">
+                            <div className="flex justify-between items-center">
+                                <label className="text-xs text-gray-400 font-bold uppercase">Text Content</label>
+                                {quotes.length > 0 && (
+                                    <button 
+                                        onClick={loadNextQuote}
+                                        className="text-[10px] flex items-center gap-1 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 px-2 py-1 rounded transition-colors"
+                                    >
+                                        Load Next Quote ({quotes.length}) <ArrowRight size={10} />
+                                    </button>
+                                )}
+                            </div>
                             <textarea 
                                 value={activeLayer.text} 
                                 onChange={(e) => updateActiveLayer({ text: e.target.value })} 
@@ -1197,16 +1417,17 @@ const App: React.FC = () => {
 
             {/* TAB: MUSIC */}
             {activeTab === 'music' && (
-                <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 py-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="flex flex-col items-center justify-center bg-gray-800/30 border-2 border-dashed border-gray-700 rounded-lg p-6 relative hover:border-blue-500 transition-colors group h-full">
+                <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300 py-4">
+                    {/* Upload / File Info Section */}
+                    <div className={`${design.audioName ? 'w-full' : 'max-w-md mx-auto'} transition-all`}>
+                         <div className="flex flex-col items-center justify-center bg-gray-800/30 border-2 border-dashed border-gray-700 rounded-lg p-6 relative hover:border-blue-500 transition-colors group h-full">
                             {design.audioName ? (
-                                <div className="flex flex-col items-center gap-3">
+                                <div className="flex flex-col items-center gap-3 w-full">
                                     <div className="p-4 rounded-full bg-blue-500/20 text-blue-400">
                                         <Music size={32} />
                                     </div>
                                     <div className="text-center">
-                                        <p className="font-bold text-lg text-white mb-1 truncate max-w-[200px]" title={design.audioName}>{design.audioName}</p>
+                                        <p className="font-bold text-lg text-white mb-1 truncate max-w-[400px]" title={design.audioName}>{design.audioName}</p>
                                         <p className="text-xs text-gray-400">
                                             {formatTime(design.audioDuration)} Total Length
                                         </p>
@@ -1240,101 +1461,124 @@ const App: React.FC = () => {
                                 title={design.audioName ? "Click to change file" : "Click to upload"}
                             />
                         </div>
+                    </div>
 
-                        {design.audioName && (
-                            <div className="flex flex-col justify-center gap-6 p-4 bg-gray-800/20 rounded-lg border border-gray-800">
-                                <div className="flex items-center justify-between mb-2">
-                                    <div className="flex items-center gap-2">
-                                        <Scissors className="text-blue-400" size={18} />
-                                        <h4 className="font-bold text-sm text-gray-300">Audio Trim Settings</h4>
+                    {/* Audio Trim Settings - Full Width for Precision */}
+                    {design.audioName && (
+                        <div className="bg-gray-800/20 rounded-lg border border-gray-800 p-6 shadow-xl">
+                            <div className="flex items-center justify-between mb-6 border-b border-gray-700 pb-4">
+                                <div className="flex items-center gap-2">
+                                    <Scissors className="text-blue-400" size={20} />
+                                    <h4 className="font-bold text-base text-gray-200">Audio Trim Settings</h4>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                     <div className="text-xs text-gray-400 bg-gray-900 px-3 py-1 rounded-full border border-gray-700">
+                                        Clip Duration: <span className="text-white font-mono font-bold">{(design.audioEnd - design.audioStart).toFixed(1)}s</span>
                                     </div>
                                     <button
                                         onClick={() => {
                                            if (isPlaying) {
                                                setIsPlaying(false);
                                            } else {
-                                               // Jump to start of cut when previewing from trim controls
                                                if (audioPreviewRef.current) {
                                                    audioPreviewRef.current.currentTime = design.audioStart;
                                                }
                                                setIsPlaying(true);
                                            }
                                         }}
-                                        className="p-2 rounded-full bg-gray-700 hover:bg-blue-600 text-white transition-colors"
-                                        title={isPlaying ? "Pause" : "Preview Cut"}
+                                        className="flex items-center gap-2 px-4 py-2 rounded-full bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors shadow-lg shadow-blue-900/20"
                                     >
-                                        {isPlaying ? <Pause size={14} /> : <Play size={14} />}
+                                        {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                                        <span className="text-xs">{isPlaying ? 'Pause' : 'Preview Clip'}</span>
                                     </button>
                                 </div>
+                            </div>
 
+                            <div className="space-y-8 px-2">
                                 {/* Start Time Slider */}
                                 <div>
                                     <div className="flex justify-between text-xs mb-2">
-                                        <span className="text-gray-400 font-bold uppercase">Start</span>
-                                        <span className="text-blue-400 font-mono">{formatTime(design.audioStart)}</span>
+                                        <span className="text-gray-400 font-bold uppercase tracking-wider">Start Time</span>
+                                        <span className="text-blue-400 font-mono text-sm bg-blue-500/10 px-2 rounded">{formatTime(design.audioStart)}</span>
                                     </div>
-                                    <input 
-                                        type="range" 
-                                        min="0" 
-                                        max={design.audioDuration} 
-                                        step="0.1" 
-                                        value={design.audioStart} 
-                                        onChange={(e) => {
-                                            const val = parseFloat(e.target.value);
-                                            // Clamp start to always be less than end
-                                            if (val < design.audioEnd) {
-                                                updateDesign({ audioStart: val });
-                                            }
-                                        }} 
-                                        onMouseUp={handleCommit}
-                                        className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500" 
-                                    />
+                                    <div className="relative h-6 flex items-center">
+                                        <div className="absolute w-full h-2 bg-gray-700 rounded-full"></div>
+                                        <div 
+                                            className="absolute h-2 bg-blue-500/50 rounded-l-full" 
+                                            style={{ width: `${(design.audioStart / design.audioDuration) * 100}%` }}
+                                        ></div>
+                                         <input 
+                                            type="range" 
+                                            min="0" 
+                                            max={design.audioDuration} 
+                                            step="0.1" 
+                                            value={design.audioStart} 
+                                            onChange={(e) => {
+                                                const val = parseFloat(e.target.value);
+                                                if (val < design.audioEnd) {
+                                                    updateDesign({ audioStart: val });
+                                                }
+                                            }} 
+                                            onMouseUp={handleCommit}
+                                            className="absolute w-full h-full opacity-0 cursor-pointer z-10"
+                                        />
+                                        <div 
+                                            className="absolute w-4 h-6 bg-blue-500 rounded shadow-lg border-2 border-white pointer-events-none transform -translate-x-1/2 transition-transform"
+                                            style={{ left: `${(design.audioStart / design.audioDuration) * 100}%` }}
+                                        ></div>
+                                    </div>
                                 </div>
 
                                 {/* End Time Slider */}
                                 <div>
                                     <div className="flex justify-between text-xs mb-2">
-                                        <span className="text-gray-400 font-bold uppercase">End</span>
-                                        <span className="text-purple-400 font-mono">{formatTime(design.audioEnd)}</span>
+                                        <span className="text-gray-400 font-bold uppercase tracking-wider">End Time</span>
+                                        <span className="text-purple-400 font-mono text-sm bg-purple-500/10 px-2 rounded">{formatTime(design.audioEnd)}</span>
                                     </div>
-                                    <input 
-                                        type="range" 
-                                        min="0" 
-                                        max={design.audioDuration} 
-                                        step="0.1" 
-                                        value={design.audioEnd} 
-                                        onChange={(e) => {
-                                            const val = parseFloat(e.target.value);
-                                            // Clamp end to always be more than start
-                                            if (val > design.audioStart) {
-                                                updateDesign({ audioEnd: val });
-                                            }
-                                        }} 
-                                        onMouseUp={handleCommit}
-                                        className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500" 
-                                    />
-                                </div>
-
-                                <div className="text-xs text-center text-gray-500 pt-2 border-t border-gray-800">
-                                    Duration: <span className="text-white">{(design.audioEnd - design.audioStart).toFixed(1)}s</span>
+                                     <div className="relative h-6 flex items-center">
+                                        <div className="absolute w-full h-2 bg-gray-700 rounded-full"></div>
+                                        <div 
+                                            className="absolute h-2 bg-purple-500/50 rounded-r-full right-0" 
+                                            style={{ width: `${100 - (design.audioEnd / design.audioDuration) * 100}%` }}
+                                        ></div>
+                                        <input 
+                                            type="range" 
+                                            min="0" 
+                                            max={design.audioDuration} 
+                                            step="0.1" 
+                                            value={design.audioEnd} 
+                                            onChange={(e) => {
+                                                const val = parseFloat(e.target.value);
+                                                if (val > design.audioStart) {
+                                                    updateDesign({ audioEnd: val });
+                                                }
+                                            }} 
+                                            onMouseUp={handleCommit}
+                                            className="absolute w-full h-full opacity-0 cursor-pointer z-10" 
+                                        />
+                                         <div 
+                                            className="absolute w-4 h-6 bg-purple-500 rounded shadow-lg border-2 border-white pointer-events-none transform -translate-x-1/2 transition-transform"
+                                            style={{ left: `${(design.audioEnd / design.audioDuration) * 100}%` }}
+                                        ></div>
+                                    </div>
                                 </div>
                             </div>
-                        )}
-                    </div>
-                    
-                    <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4 flex gap-3 items-start">
-                        <div className="p-1 text-blue-400 mt-0.5"><Eye size={16} /></div>
-                        <div className="text-xs text-blue-200/80 leading-relaxed">
-                            <strong>Note:</strong> The trimmed segment will automatically loop if your video duration ({design.duration}s) is longer than the selected audio segment.
+                            
+                            <div className="mt-6 flex items-center gap-3 p-3 rounded bg-blue-500/5 border border-blue-500/10">
+                                <div className="p-1 text-blue-400"><Eye size={16} /></div>
+                                <div className="text-xs text-blue-200/70 leading-relaxed">
+                                    The selected audio segment ({formatTime(design.audioStart)} - {formatTime(design.audioEnd)}) will loop automatically if the video duration is longer.
+                                </div>
+                            </div>
                         </div>
-                    </div>
+                    )}
                 </div>
             )}
 
             {/* TAB: WEATHER */}
             {activeTab === 'weather' && (
-                <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 py-4">
-                    <div className="flex justify-center gap-4">
+                <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 py-4">
+                    <div className="flex justify-center gap-4 pb-4 border-b border-gray-800">
                          <button 
                             onClick={() => updateDesign({ weatherType: 'none' }, true)} 
                             className={`px-6 py-3 rounded-lg border flex flex-col items-center gap-2 w-32 transition-all ${design.weatherType === 'none' ? 'bg-gray-800 border-blue-500 text-white' : 'border-gray-800 text-gray-500 hover:bg-gray-900'}`}
@@ -1358,9 +1602,54 @@ const App: React.FC = () => {
                     </div>
 
                     {design.weatherType !== 'none' && (
-                        <div className="space-y-2">
-                             <div className="flex justify-between"><label className="text-xs text-gray-400 font-bold uppercase">Intensity / Speed</label><span className="text-xs text-gray-500">{design.weatherIntensity}%</span></div>
-                             <input type="range" min="10" max="100" value={design.weatherIntensity} onChange={(e) => updateDesign({ weatherIntensity: parseInt(e.target.value) })} onMouseUp={handleCommit} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            {/* Density & Scale & Speed */}
+                            <div className="space-y-6">
+                                <div className="space-y-2">
+                                     <div className="flex justify-between"><label className="text-xs text-gray-400 font-bold uppercase">Density</label><span className="text-xs text-gray-500">{design.weatherDensity}%</span></div>
+                                     <input type="range" min="10" max="100" value={design.weatherDensity} onChange={(e) => updateDesign({ weatherDensity: parseInt(e.target.value) })} onMouseUp={handleCommit} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                                </div>
+                                <div className="space-y-2">
+                                     <div className="flex justify-between">
+                                         <label className="text-xs text-gray-400 font-bold uppercase flex items-center gap-1"><Maximize size={12}/> Scale</label>
+                                         <span className="text-xs text-gray-500">{design.weatherScale.toFixed(1)}x</span>
+                                     </div>
+                                     <input type="range" min="0.2" max="3.0" step="0.1" value={design.weatherScale} onChange={(e) => updateDesign({ weatherScale: parseFloat(e.target.value) })} onMouseUp={handleCommit} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between">
+                                        <label className="text-xs text-gray-400 font-bold uppercase flex items-center gap-1"><Gauge size={12}/> Speed</label>
+                                        <span className="text-xs text-gray-500">{design.weatherSpeed.toFixed(1)}x</span>
+                                    </div>
+                                    <input type="range" min="0.1" max="5.0" step="0.1" value={design.weatherSpeed} onChange={(e) => updateDesign({ weatherSpeed: parseFloat(e.target.value) })} onMouseUp={handleCommit} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                                </div>
+                            </div>
+                            
+                            {/* Angle & Wobble & Opacity */}
+                            <div className="space-y-6">
+                                <div className="space-y-2">
+                                     <div className="flex justify-between">
+                                        <label className="text-xs text-gray-400 font-bold uppercase flex items-center gap-1"><Wind size={12}/> Angle</label>
+                                        <span className="text-xs text-gray-500">{design.weatherAngle}°</span>
+                                     </div>
+                                     <input type="range" min="-45" max="45" value={design.weatherAngle} onChange={(e) => updateDesign({ weatherAngle: parseInt(e.target.value) })} onMouseUp={handleCommit} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                                     <div className="flex justify-between text-[10px] text-gray-600 px-1"><span>-45°</span><span>0°</span><span>45°</span></div>
+                                </div>
+                                <div className="space-y-2">
+                                     <div className="flex justify-between">
+                                        <label className="text-xs text-gray-400 font-bold uppercase flex items-center gap-1"><Activity size={12}/> Wobble</label>
+                                        <span className="text-xs text-gray-500">{design.weatherWobble.toFixed(1)}</span>
+                                     </div>
+                                     <input type="range" min="0" max="5.0" step="0.1" value={design.weatherWobble} onChange={(e) => updateDesign({ weatherWobble: parseFloat(e.target.value) })} onMouseUp={handleCommit} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between">
+                                        <label className="text-xs text-gray-400 font-bold uppercase flex items-center gap-1"><Droplets size={12}/> Opacity</label>
+                                        <span className="text-xs text-gray-500">{design.weatherOpacity.toFixed(1)}</span>
+                                    </div>
+                                    <input type="range" min="0" max="1.5" step="0.1" value={design.weatherOpacity} onChange={(e) => updateDesign({ weatherOpacity: parseFloat(e.target.value) })} onMouseUp={handleCommit} className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                                </div>
+                            </div>
                         </div>
                     )}
                 </div>
@@ -1395,6 +1684,61 @@ const App: React.FC = () => {
                                 <label className="block text-xs text-gray-400 font-bold uppercase mb-2">Current Image</label>
                                 <div className="w-full aspect-video rounded-lg overflow-hidden border border-gray-700 relative">
                                     <img src={design.bgImage.src} className="w-full h-full object-cover" alt="Background" />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+             {/* TAB: QUOTES */}
+             {activeTab === 'quotes' && (
+                <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 py-4">
+                    <div className="grid grid-cols-1 gap-6">
+                        <div className="flex flex-col items-center justify-center bg-gray-800/30 border-2 border-dashed border-gray-700 rounded-lg p-6 relative hover:border-blue-500 transition-colors">
+                            <div className="text-center">
+                                <FileText className="mx-auto text-gray-500 mb-2" size={32} />
+                                <h3 className="text-lg font-bold text-white mb-2">Upload Quotes</h3>
+                                <p className="text-sm text-gray-400 max-w-xs mx-auto mb-2">
+                                    Upload a .txt file. Each line will be treated as a separate quote.
+                                </p>
+                            </div>
+                            <input 
+                                type="file" 
+                                accept=".txt" 
+                                onChange={handleQuoteUpload} 
+                                className="absolute inset-0 opacity-0 cursor-pointer" 
+                            />
+                        </div>
+
+                        {quotes.length > 0 && (
+                            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-800 flex flex-col gap-3">
+                                <div className="flex justify-between items-center mb-1">
+                                    <h4 className="font-bold text-sm text-gray-300">Quotes Queue ({quotes.length})</h4>
+                                    <button 
+                                        onClick={() => setQuotes([])} 
+                                        className="text-xs text-red-400 hover:text-red-300"
+                                    >
+                                        Clear All
+                                    </button>
+                                </div>
+                                <div className="max-h-[200px] overflow-y-auto space-y-2 pr-2">
+                                    {quotes.map((quote, idx) => (
+                                        <div key={idx} className="bg-gray-900/50 p-3 rounded border border-gray-700 text-sm text-gray-300 flex justify-between gap-4 group">
+                                            <span className="truncate">{quote}</span>
+                                            {idx === 0 && (
+                                                <button 
+                                                    onClick={loadNextQuote} 
+                                                    className="shrink-0 text-blue-400 hover:text-blue-300 text-xs font-bold uppercase"
+                                                >
+                                                    Load
+                                                </button>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded text-xs text-blue-300">
+                                    <strong>Workflow:</strong> Click "Load" to put the first quote onto the canvas. When you finish exporting the video, that quote will be automatically removed from this list.
                                 </div>
                             </div>
                         )}

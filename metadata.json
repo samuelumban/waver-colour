@@ -1,5 +1,5 @@
 {
-  "name": "Gradient Wave Generator",
-  "description": "A high-performance generator for looping, gradient wave backgrounds. Supports Full HD 60FPS export, customizable colors, speed, blend modes, and blur intensity.",
+  "name": "Vid Quotes Maker",
+  "description": "Create stunning video quotes with looping gradient backgrounds. Features text automation, audio trimming, and high-quality export.",
   "requestFramePermissions": []
 }
