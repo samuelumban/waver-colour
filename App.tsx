@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Play, Pause, RefreshCw, Plus, X, Video, Image as ImageIcon, Layout, Monitor, Smartphone, Square, Type, CloudRain, Sparkles, Palette, Wand2, Undo, Redo, Layers, Trash2, Move, ImagePlus, Eye, Bold, Italic, Upload, Music } from 'lucide-react';
+import { Play, Pause, RefreshCw, Plus, X, Video, Image as ImageIcon, Layout, Monitor, Smartphone, Square, Type, CloudRain, Sparkles, Palette, Wand2, Undo, Redo, Layers, Trash2, Move, ImagePlus, Eye, Bold, Italic, Upload, Music, Scissors } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
 // --- Types ---
@@ -78,6 +78,9 @@ interface DesignState {
     customFonts: CustomFont[];
     audio: File | null;
     audioName: string | null;
+    audioDuration: number;
+    audioStart: number;
+    audioEnd: number;
 }
 
 const ASPECT_RATIOS: Record<AspectRatioKey, { w: number, h: number, label: string, icon: React.ReactNode }> = {
@@ -131,7 +134,10 @@ const INITIAL_DESIGN: DesignState = {
     logo: null,
     customFonts: [],
     audio: null,
-    audioName: null
+    audioName: null,
+    audioDuration: 0,
+    audioStart: 0,
+    audioEnd: 0
 };
 
 // --- Helper Functions ---
@@ -157,6 +163,12 @@ const drawImageCover = (ctx: CanvasRenderingContext2D, img: HTMLImageElement, x:
     const cx = (w - nw) * 0.5;
     const cy = (h - nh) * 0.5;
     ctx.drawImage(img, cx, cy, nw, nh);
+};
+
+const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
 // --- Main Component ---
@@ -235,8 +247,12 @@ const App: React.FC = () => {
         if (design.audio) {
             const url = URL.createObjectURL(design.audio);
             audioPreviewRef.current.src = url;
-            audioPreviewRef.current.loop = true;
+            // Native loop attribute loops the whole file, but we need custom looping for cut segments
+            // so we handle looping manually via onTimeUpdate
+            audioPreviewRef.current.loop = false; 
+            
             if (isPlaying && !isRecording) {
+                audioPreviewRef.current.currentTime = design.audioStart;
                 audioPreviewRef.current.play().catch(e => console.log("Auto-play prevented", e));
             }
             return () => URL.revokeObjectURL(url);
@@ -251,11 +267,26 @@ const App: React.FC = () => {
       if (!audioPreviewRef.current || !design.audio) return;
       
       if (isPlaying && !isRecording) {
+          // Check if we are outside the valid range before playing
+          if (audioPreviewRef.current.currentTime < design.audioStart || audioPreviewRef.current.currentTime >= design.audioEnd) {
+             audioPreviewRef.current.currentTime = design.audioStart;
+          }
           audioPreviewRef.current.play().catch(() => {});
       } else {
           audioPreviewRef.current.pause();
       }
-  }, [isPlaying, isRecording]);
+  }, [isPlaying, isRecording, design.audioStart, design.audioEnd]); // Also react to start/end changes
+
+  // Enforce loop within Start/End
+  const handleAudioTimeUpdate = () => {
+      if (!audioPreviewRef.current) return;
+      if (audioPreviewRef.current.currentTime >= design.audioEnd) {
+          audioPreviewRef.current.currentTime = design.audioStart;
+          if (isPlaying && !isRecording) {
+            audioPreviewRef.current.play().catch(() => {});
+          }
+      }
+  };
 
 
   // --- Logic for Weather ---
@@ -563,7 +594,19 @@ const App: React.FC = () => {
   const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) {
-          updateDesign({ audio: file, audioName: file.name }, true);
+          const url = URL.createObjectURL(file);
+          const tempAudio = new Audio(url);
+          // Wait for metadata to get duration
+          tempAudio.addEventListener('loadedmetadata', () => {
+              updateDesign({ 
+                  audio: file, 
+                  audioName: file.name,
+                  audioDuration: tempAudio.duration,
+                  audioStart: 0,
+                  audioEnd: tempAudio.duration
+              }, true);
+              URL.revokeObjectURL(url);
+          });
       }
   };
 
@@ -690,14 +733,15 @@ const App: React.FC = () => {
             const dest = audioCtx.createMediaStreamDestination();
             audioSource = audioCtx.createBufferSource();
             audioSource.buffer = audioBuffer;
-            audioSource.loop = true; // Loop audio if video is longer
-            audioSource.connect(dest);
-            audioSource.connect(audioCtx.destination); // Optional: hear it while recording? Maybe mute for user comfort
             
-            // Actually, we don't want to hear it while recording if we are doing a background render, 
-            // but since we are doing real-time, hearing it confirms it's working.
-            // Let's NOT connect to ctx.destination to avoid double audio if the hidden audio element plays.
-            audioSource.disconnect(audioCtx.destination); 
+            // Loop the Cut Segment
+            audioSource.loop = true; 
+            audioSource.loopStart = design.audioStart;
+            audioSource.loopEnd = design.audioEnd;
+            
+            audioSource.connect(dest);
+            // We disconnect destination to avoid double playing during render if not needed
+            // audioSource.connect(audioCtx.destination); 
             
             audioTracks = dest.stream.getAudioTracks();
         } catch (e) {
@@ -743,7 +787,9 @@ const App: React.FC = () => {
 
     // -- Real-Time Recording Loop --
     recorder.start();
-    if (audioSource) audioSource.start(0);
+    
+    // Start playing audio at the selected start time
+    if (audioSource) audioSource.start(0, design.audioStart);
 
     const startTime = performance.now();
     const durationMs = design.duration * 1000;
@@ -773,7 +819,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen w-full bg-gray-950 text-white font-sans overflow-hidden">
       
-      <audio ref={audioPreviewRef} className="hidden" />
+      <audio ref={audioPreviewRef} className="hidden" onTimeUpdate={handleAudioTimeUpdate} />
 
       {/* --- TOP HEADER --- */}
       <div className="h-16 shrink-0 bg-gray-850/90 backdrop-blur border-b border-gray-750 flex items-center justify-between px-4 lg:px-8 z-20 shadow-xl relative">
@@ -1152,50 +1198,134 @@ const App: React.FC = () => {
             {/* TAB: MUSIC */}
             {activeTab === 'music' && (
                 <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 py-4">
-                    <div className="flex flex-col items-center justify-center bg-gray-800/30 border-2 border-dashed border-gray-700 rounded-lg p-10 relative hover:border-blue-500 transition-colors group">
-                        {design.audioName ? (
-                            <div className="flex flex-col items-center gap-3">
-                                <div className="p-4 rounded-full bg-blue-500/20 text-blue-400">
-                                    <Music size={32} />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="flex flex-col items-center justify-center bg-gray-800/30 border-2 border-dashed border-gray-700 rounded-lg p-6 relative hover:border-blue-500 transition-colors group h-full">
+                            {design.audioName ? (
+                                <div className="flex flex-col items-center gap-3">
+                                    <div className="p-4 rounded-full bg-blue-500/20 text-blue-400">
+                                        <Music size={32} />
+                                    </div>
+                                    <div className="text-center">
+                                        <p className="font-bold text-lg text-white mb-1 truncate max-w-[200px]" title={design.audioName}>{design.audioName}</p>
+                                        <p className="text-xs text-gray-400">
+                                            {formatTime(design.audioDuration)} Total Length
+                                        </p>
+                                    </div>
+                                    <button 
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            updateDesign({ audio: null, audioName: null, audioDuration: 0, audioStart: 0, audioEnd: 0 }, true);
+                                        }}
+                                        className="mt-2 px-4 py-2 rounded-full bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white text-sm font-medium transition-colors z-20"
+                                    >
+                                        Remove Audio
+                                    </button>
                                 </div>
+                            ) : (
                                 <div className="text-center">
-                                    <p className="font-bold text-lg text-white mb-1">{design.audioName}</p>
-                                    <p className="text-xs text-gray-400">Audio Loaded & Ready</p>
+                                    <div className="w-16 h-16 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-4 text-gray-500 group-hover:text-blue-400 transition-colors">
+                                        <Music size={32} />
+                                    </div>
+                                    <h3 className="text-lg font-bold text-white mb-2">Upload Music</h3>
+                                    <p className="text-sm text-gray-400 max-w-xs mx-auto">
+                                        MP3, WAV, AAC supported.
+                                    </p>
                                 </div>
-                                <button 
-                                    onClick={(e) => {
-                                        e.preventDefault();
-                                        updateDesign({ audio: null, audioName: null }, true);
-                                    }}
-                                    className="mt-4 px-4 py-2 rounded-full bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white text-sm font-medium transition-colors z-20"
-                                >
-                                    Remove Audio
-                                </button>
-                            </div>
-                        ) : (
-                            <div className="text-center">
-                                <div className="w-16 h-16 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-4 text-gray-500 group-hover:text-blue-400 transition-colors">
-                                    <Music size={32} />
+                            )}
+                             <input 
+                                type="file" 
+                                accept="audio/*" 
+                                onChange={handleAudioUpload} 
+                                className="absolute inset-0 opacity-0 cursor-pointer" 
+                                title={design.audioName ? "Click to change file" : "Click to upload"}
+                            />
+                        </div>
+
+                        {design.audioName && (
+                            <div className="flex flex-col justify-center gap-6 p-4 bg-gray-800/20 rounded-lg border border-gray-800">
+                                <div className="flex items-center justify-between mb-2">
+                                    <div className="flex items-center gap-2">
+                                        <Scissors className="text-blue-400" size={18} />
+                                        <h4 className="font-bold text-sm text-gray-300">Audio Trim Settings</h4>
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                           if (isPlaying) {
+                                               setIsPlaying(false);
+                                           } else {
+                                               // Jump to start of cut when previewing from trim controls
+                                               if (audioPreviewRef.current) {
+                                                   audioPreviewRef.current.currentTime = design.audioStart;
+                                               }
+                                               setIsPlaying(true);
+                                           }
+                                        }}
+                                        className="p-2 rounded-full bg-gray-700 hover:bg-blue-600 text-white transition-colors"
+                                        title={isPlaying ? "Pause" : "Preview Cut"}
+                                    >
+                                        {isPlaying ? <Pause size={14} /> : <Play size={14} />}
+                                    </button>
                                 </div>
-                                <h3 className="text-lg font-bold text-white mb-2">Upload Music</h3>
-                                <p className="text-sm text-gray-400 max-w-xs mx-auto">
-                                    Add a soundtrack to your video. Supports MP3, WAV, AAC, and other common audio formats.
-                                </p>
+
+                                {/* Start Time Slider */}
+                                <div>
+                                    <div className="flex justify-between text-xs mb-2">
+                                        <span className="text-gray-400 font-bold uppercase">Start</span>
+                                        <span className="text-blue-400 font-mono">{formatTime(design.audioStart)}</span>
+                                    </div>
+                                    <input 
+                                        type="range" 
+                                        min="0" 
+                                        max={design.audioDuration} 
+                                        step="0.1" 
+                                        value={design.audioStart} 
+                                        onChange={(e) => {
+                                            const val = parseFloat(e.target.value);
+                                            // Clamp start to always be less than end
+                                            if (val < design.audioEnd) {
+                                                updateDesign({ audioStart: val });
+                                            }
+                                        }} 
+                                        onMouseUp={handleCommit}
+                                        className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500" 
+                                    />
+                                </div>
+
+                                {/* End Time Slider */}
+                                <div>
+                                    <div className="flex justify-between text-xs mb-2">
+                                        <span className="text-gray-400 font-bold uppercase">End</span>
+                                        <span className="text-purple-400 font-mono">{formatTime(design.audioEnd)}</span>
+                                    </div>
+                                    <input 
+                                        type="range" 
+                                        min="0" 
+                                        max={design.audioDuration} 
+                                        step="0.1" 
+                                        value={design.audioEnd} 
+                                        onChange={(e) => {
+                                            const val = parseFloat(e.target.value);
+                                            // Clamp end to always be more than start
+                                            if (val > design.audioStart) {
+                                                updateDesign({ audioEnd: val });
+                                            }
+                                        }} 
+                                        onMouseUp={handleCommit}
+                                        className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500" 
+                                    />
+                                </div>
+
+                                <div className="text-xs text-center text-gray-500 pt-2 border-t border-gray-800">
+                                    Duration: <span className="text-white">{(design.audioEnd - design.audioStart).toFixed(1)}s</span>
+                                </div>
                             </div>
                         )}
-                         <input 
-                            type="file" 
-                            accept="audio/*" 
-                            onChange={handleAudioUpload} 
-                            className="absolute inset-0 opacity-0 cursor-pointer" 
-                            title={design.audioName ? "Click to change file" : "Click to upload"}
-                        />
                     </div>
                     
                     <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4 flex gap-3 items-start">
                         <div className="p-1 text-blue-400 mt-0.5"><Eye size={16} /></div>
                         <div className="text-xs text-blue-200/80 leading-relaxed">
-                            <strong>Note:</strong> During preview, audio loops automatically. When exporting, the video duration determines the length. If the audio is shorter than the video, it will loop; if longer, it will fade out at the end.
+                            <strong>Note:</strong> The trimmed segment will automatically loop if your video duration ({design.duration}s) is longer than the selected audio segment.
                         </div>
                     </div>
                 </div>
